@@ -86,6 +86,21 @@ export class WebSocketClient {
   /* Internal helpers                                                   */
   /* ------------------------------------------------------------------ */
 
+  private getWebSocketUrls(): string[] {
+    if (typeof window === 'undefined') return []
+    
+    // Get the current host from window.location
+    const currentHost = window.location.host
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    
+    // For WebContainer environment, use the same host but port 8080
+    return [
+      `${protocol}//${currentHost.replace(':3000', ':8080')}`,
+      `ws://localhost:8080`,
+      `ws://127.0.0.1:8080`
+    ]
+  }
+
   private async tryConnectSequentially(): Promise<void> {
     while (this.urlIndex < this.urls.length) {
       const url = this.urls[this.urlIndex]

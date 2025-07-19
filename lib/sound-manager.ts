@@ -8,7 +8,10 @@ export class SoundManager {
   private volume = 0.7
 
   constructor() {
-    this.initializeSounds()
+    // Only initialize sounds in browser environment
+    if (typeof window !== 'undefined') {
+      this.initializeSounds()
+    }
   }
 
   /**

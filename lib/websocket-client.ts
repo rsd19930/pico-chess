@@ -12,32 +12,25 @@ export class WebSocketClient {
   private readonly handlers = new Map<string, MessageHandler>()
   private reconnectAttempts = 0
   private readonly maxReconnectAttempts = 5
-  private readonly reconnectDelay = 1_000 // ms
+  private readonly reconnectDelay = 2_000 // ms
 
   constructor() {
-    // 1️⃣ If NEXT_PUBLIC_WS_URL is set, use it exclusively.
-    const envUrl = process.env.NEXT_PUBLIC_WS_URL
-    if (envUrl) {
-      this.urls = [envUrl]
-      return
-    }
-
-    // 2️⃣ Otherwise, build a list of sensible defaults (only on client).
+    // Build a list of WebSocket URLs to try
     if (typeof window === "undefined") {
       this.urls = []
       return
     }
 
-    const { host, protocol } = window.location
-    const secureHostUrl = `wss://${host}/api/socket`
-    const insecureHostUrl = `ws://${host}/api/socket`
+    // Try multiple WebSocket endpoints
     const localhostUrl = "ws://localhost:8080"
+    const { host, protocol } = window.location
+    const wsProtocol = protocol === "https:" ? "wss:" : "ws:"
+    const hostUrl = `${wsProtocol}//${host.replace(':3000', ':8080')}`
 
-    // If we’re already on http (not https) there’s no point in trying wss first.
-    this.urls =
-      protocol === "https:"
-        ? [secureHostUrl, insecureHostUrl, localhostUrl]
-        : [insecureHostUrl, localhostUrl, secureHostUrl]
+    // Try localhost first in development, then host-based URL
+    this.urls = [localhostUrl, hostUrl]
+    
+    console.log('WebSocket URLs to try:', this.urls)
   }
 
   /* ------------------------------------------------------------------ */
@@ -45,7 +38,15 @@ export class WebSocketClient {
   /* ------------------------------------------------------------------ */
 
   async connect(): Promise<void> {
-    if (this.isConnecting) throw new Error("WebSocketClient: already connecting")
+    if (this.isConnecting) {
+      console.warn("WebSocket already connecting, skipping...")
+      return
+    }
+    
+    if (this.isConnected) {
+      console.log("WebSocket already connected")
+      return
+    }
 
     this.isConnecting = true
     this.urlIndex = 0
@@ -63,14 +64,17 @@ export class WebSocketClient {
 
   send(type: string, data: unknown) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error("WebSocket not connected")
+      console.warn("WebSocket not connected, cannot send message:", type)
+      return
     }
     this.ws.send(JSON.stringify({ type, data }))
   }
 
   disconnect() {
     this.reconnectAttempts = this.maxReconnectAttempts // stop auto-retry
-    this.ws?.close()
+    if (this.ws) {
+      this.ws.close()
+    }
     this.ws = null
   }
 
@@ -83,18 +87,13 @@ export class WebSocketClient {
   /* ------------------------------------------------------------------ */
 
   private async tryConnectSequentially(): Promise<void> {
-    // If we’ve already told listeners that no endpoint is available,
-    // don’t spam again.
-    if (this.handlers.get("__unavailable_fired")) {
-      this.isConnecting = false
-      return
-    }
-
     while (this.urlIndex < this.urls.length) {
       const url = this.urls[this.urlIndex]
+      console.log(`Trying to connect to: ${url}`)
       try {
         await this.openWebSocket(url)
         console.log(`[ws] ✅ Connected → ${url}`)
+        this.isConnecting = false
         return
       } catch (err) {
         console.warn(`[ws] ❌  Connection failed (${url}):`, (err as Error).message)
@@ -102,10 +101,9 @@ export class WebSocketClient {
       }
     }
 
-    // All attempts failed – let the UI handle it (quietly)
+    // All attempts failed
+    console.error('[ws] All connection attempts failed')
     this.handlers.get("connection_unavailable")?.(null)
-    // Mark that we’ve already notified to avoid multiple logs
-    this.handlers.set("__unavailable_fired", () => {})
     this.isConnecting = false
   }
 
@@ -113,12 +111,23 @@ export class WebSocketClient {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url)
       let settled = false
+      
+      // Set a connection timeout
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true
+          ws.close()
+          reject(new Error("Connection timeout"))
+        }
+      }, 5000) // 5 second timeout
 
       const cleanup = () => {
+        clearTimeout(timeout)
         ws.onopen = ws.onerror = ws.onclose = ws.onmessage = null
       }
 
       ws.onopen = () => {
+        console.log(`WebSocket connected to ${url}`)
         this.ws = ws
         this.reconnectAttempts = 0
         settled = true
@@ -130,7 +139,7 @@ export class WebSocketClient {
         if (!settled) {
           settled = true
           cleanup()
-          reject(new Error("WebSocket error"))
+          reject(new Error(`WebSocket error for ${url}`))
         } else {
           console.error("WebSocket runtime error:", evt)
         }
@@ -140,8 +149,9 @@ export class WebSocketClient {
         if (!settled) {
           settled = true
           cleanup()
-          reject(new Error("WebSocket closed before opening"))
+          reject(new Error(`WebSocket closed before opening for ${url}`))
         } else {
+          console.log("WebSocket connection closed")
           this.handleDisconnection()
         }
       }
@@ -159,15 +169,20 @@ export class WebSocketClient {
   }
 
   private handleDisconnection() {
+    this.ws = null
+    
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error("[ws] Max reconnection attempts reached")
       this.handlers.get("connection_lost")?.({ reason: "max_retries" })
       return
     }
+    
     this.reconnectAttempts += 1
     const delay = this.reconnectDelay * this.reconnectAttempts
-    console.warn(`[ws] Lost connection – retrying in ${delay} ms`)
+    console.warn(`[ws] Lost connection – retrying in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`)
+    
     setTimeout(() => {
+      this.isConnecting = false // Reset connecting state
       this.tryConnectSequentially().catch((err) => {
         console.error("[ws] Reconnect attempt failed:", err)
       })

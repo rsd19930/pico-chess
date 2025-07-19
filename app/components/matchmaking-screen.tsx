@@ -126,16 +126,20 @@ export function MatchmakingScreen({ onMatchFound, onCancel }: MatchmakingScreenP
       wsClient.on("connection_unavailable", onUnavailable)
 
       // Attempt connection *after* handlers are ready
+      console.log("Attempting WebSocket connection...")
       await wsClient.connect()
 
       // If connection successful, join matchmaking
       if (wsClient.isConnected) {
+        console.log("WebSocket connected, joining matchmaking...")
         setMatchmakingState("searching")
         wsClient.send("join_matchmaking", { playerId })
+      } else {
+        throw new Error("WebSocket connection failed")
       }
     } catch (error) {
       console.error("Failed to connect:", error)
-      setConnectionError("Failed to connect to game server. Please check your internet connection and try again.")
+      setConnectionError("Failed to connect to game server. Make sure the WebSocket server is running on port 8080.")
       setMatchmakingState("connecting")
     }
   }
@@ -144,6 +148,10 @@ export function MatchmakingScreen({ onMatchFound, onCancel }: MatchmakingScreenP
    * Retry connection
    */
   const handleRetry = () => {
+    if (wsClientRef.current) {
+      wsClientRef.current.disconnect()
+      wsClientRef.current = null
+    }
     initializeConnection()
   }
 
@@ -196,7 +204,7 @@ export function MatchmakingScreen({ onMatchFound, onCancel }: MatchmakingScreenP
           <p className="text-sm md:text-base text-gray-600">
             Player: <span className="font-semibold">{currentPlayer?.name || "You"}</span>
           </p>
-          <p className="text-xs text-blue-600 mt-1">🌐 Real-time WebSocket multiplayer</p>
+          <p className="text-xs text-blue-600 mt-1">🌐 WebSocket: {wsClientRef.current?.isConnected ? 'Connected' : 'Disconnected'}</p>
         </div>
 
         {/* Connection Error */}
@@ -204,6 +212,9 @@ export function MatchmakingScreen({ onMatchFound, onCancel }: MatchmakingScreenP
           <div className="mb-6 p-3 md:p-4 bg-red-100 border border-red-300 rounded-lg">
             <h3 className="text-red-700 font-semibold mb-2 text-sm md:text-base">Connection Error</h3>
             <p className="text-red-600 text-xs md:text-sm mb-3">{connectionError}</p>
+            <p className="text-red-500 text-xs mb-3">
+              Make sure to run: <code className="bg-red-200 px-1 rounded">node server/websocket-server.js</code>
+            </p>
             <button
               onClick={handleRetry}
               className="px-3 md:px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 text-sm md:text-base"

@@ -67,12 +67,23 @@ function getInitialGameState() {
 }
 
 function findOrCreateRoom(playerId, socket) {
+  // First check if player is already in a room
+  for (const room of gameRooms.values()) {
+    const existingPlayer = room.players.find(p => p.id === playerId)
+    if (existingPlayer) {
+      console.log(`Player ${playerId} already in room ${room.id}`)
+      existingPlayer.socket = socket
+      existingPlayer.isConnected = true
+      return { room, player: existingPlayer, isNewRoom: false }
+    }
+  }
+
   // Look for available room
   for (const room of gameRooms.values()) {
     if (room.players.length === 1 && !room.isGameStarted) {
       const roomAge = Date.now() - room.createdAt
       if (roomAge < 5 * 60 * 1000) {
-        // 5 minutes
+        console.log(`Found available room ${room.id} for player ${playerId}`)
         // Join this room
         const player = {
           id: playerId,
@@ -86,11 +97,13 @@ function findOrCreateRoom(playerId, socket) {
         room.players.push(player)
         room.lastActivity = Date.now()
 
+        console.log(`Player ${playerId} joined room ${room.id} as second player`)
         return { room, player, isNewRoom: false }
       }
     }
   }
 
+  console.log(`No available rooms found, creating new room for player ${playerId}`)
   // Create new room
   const roomId = `room_${generateId()}`
   const player = {
@@ -112,6 +125,7 @@ function findOrCreateRoom(playerId, socket) {
   }
 
   gameRooms.set(roomId, room)
+  console.log(`Created new room ${roomId} for player ${playerId}`)
   return { room, player, isNewRoom: true }
 }
 
@@ -190,6 +204,12 @@ wss.on("connection", (ws) => {
 function handleJoinMatchmaking(ws, playerId) {
   console.log(`🎯 Player ${playerId} joining matchmaking`)
 
+  // Check if player already has a socket connection
+  const existingSocket = playerSockets.get(playerId)
+  if (existingSocket && existingSocket !== ws) {
+    console.log(`Replacing existing socket for player ${playerId}`)
+  }
+
   // Store player-socket mapping
   playerSockets.set(playerId, ws)
   socketPlayers.set(ws, playerId)
@@ -201,57 +221,72 @@ function handleJoinMatchmaking(ws, playerId) {
     room.isGameStarted = true
     console.log(`🎮 Starting game in room ${room.id}`)
 
-    broadcastToRoom(room, {
-      type: "game_found",
-      data: {
-        room,
-        yourPlayer: player,
-      },
-    })
-
-    broadcastToRoom(room, {
-      type: "game_state_update",
-      data: {
-        gameState: room.gameState,
-        room,
-      },
-    })
-  } else {
-    // Waiting for second player
-    console.log(`⏳ Player ${playerId} waiting in room ${room.id}`)
-
-    sendToPlayer(playerId, {
-      type: "waiting_for_opponent",
-      data: {
-        room,
-        yourPlayer: player,
-        waitTime: 60,
-      },
-    })
-
-    // Set timeout for bot
-    setTimeout(() => {
-      console.log(`🤖 Checking timeout for room ${room.id}`)
-      if (room.players.length === 1 && !room.isGameStarted) {
-        console.log(`🤖 Adding bot to room ${room.id}`)
-
-        const bot = addBotToRoom(room)
-
-        sendToPlayer(playerId, {
+    // Send game_found to both players
+    room.players.forEach(p => {
+      if (p.socket && p.socket.readyState === p.socket.OPEN) {
+        p.socket.send(JSON.stringify({
           type: "game_found",
           data: {
             room,
-            yourPlayer: player,
+            yourPlayer: p,
           },
-        })
+        }))
+      }
+    })
 
-        sendToPlayer(playerId, {
+    // Send initial game state to both players
+    room.players.forEach(p => {
+      if (p.socket && p.socket.readyState === p.socket.OPEN) {
+        p.socket.send(JSON.stringify({
           type: "game_state_update",
           data: {
             gameState: room.gameState,
             room,
           },
-        })
+        }))
+      }
+    })
+  } else {
+    // Waiting for second player
+    console.log(`⏳ Player ${playerId} waiting in room ${room.id}`)
+
+    if (player.socket && player.socket.readyState === player.socket.OPEN) {
+      player.socket.send(JSON.stringify({
+        type: "waiting_for_opponent",
+        data: {
+          room,
+          yourPlayer: player,
+          waitTime: 60,
+        },
+      }))
+    }
+
+    // Set timeout for bot
+    setTimeout(() => {
+      console.log(`🤖 Checking timeout for room ${room.id}`)
+      const currentRoom = gameRooms.get(room.id)
+      if (currentRoom && currentRoom.players.length === 1 && !currentRoom.isGameStarted) {
+        console.log(`🤖 Adding bot to room ${room.id}`)
+
+        const bot = addBotToRoom(currentRoom)
+
+        if (player.socket && player.socket.readyState === player.socket.OPEN) {
+          player.socket.send(JSON.stringify({
+            type: "game_found",
+            data: {
+              room: currentRoom,
+              yourPlayer: player,
+            },
+          }))
+
+          player.socket.send(JSON.stringify({
+            type: "game_state_update",
+            data: {
+              gameState: currentRoom.gameState,
+              room: currentRoom,
+            },
+          }))
+        }
       }
     }, 60000) // 60 seconds
   }
@@ -320,16 +355,24 @@ function handleGameMove(ws, data) {
 function handleDisconnection(ws) {
   const playerId = socketPlayers.get(ws)
   if (playerId) {
+    console.log(`👋 Player ${playerId} disconnected`)
     playerSockets.delete(playerId)
     socketPlayers.delete(ws)
 
     // Remove player from rooms
     for (const room of gameRooms.values()) {
-      room.players = room.players.filter((p) => p.id !== playerId)
+      const playerIndex = room.players.findIndex(p => p.id === playerId)
+      if (playerIndex !== -1) {
+        console.log(`Removing player ${playerId} from room ${room.id}`)
+        room.players.splice(playerIndex, 1)
+      }
       if (room.players.length === 0) {
+        console.log(`Deleting empty room ${room.id}`)
         gameRooms.delete(room.id)
       }
     }
+  } else {
+    console.log(`👋 Unknown client disconnected`)
   }
 }
 

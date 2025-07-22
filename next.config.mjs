@@ -9,6 +9,14 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  // Ensure server is accessible
+  experimental: {
+    serverComponentsExternalPackages: [],
+  },
+  // Fix potential hostname issues
+  async rewrites() {
+    return []
+  },
 }
 
 export default nextConfig

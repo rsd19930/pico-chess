@@ -7,7 +7,7 @@ export class WebSocketClient {
   private ws: WebSocket | null = null
   private isConnecting = false
   private urlIndex = 0
-  private readonly urls: string[]
+  private urls: string[]
 
   private readonly handlers = new Map<string, MessageHandler>()
   private reconnectAttempts = 0
@@ -15,22 +15,7 @@ export class WebSocketClient {
   private readonly reconnectDelay = 2_000 // ms
 
   constructor() {
-    // Build a list of WebSocket URLs to try
-    if (typeof window === "undefined") {
-      this.urls = []
-      return
-    }
-
-    // Try multiple WebSocket endpoints
-    const localhostUrl = "ws://localhost:8080"
-    const { host, protocol } = window.location
-    const wsProtocol = protocol === "https:" ? "wss:" : "ws:"
-    const hostUrl = `${wsProtocol}//${host.replace(':3000', ':8080')}`
-
-    // Try localhost first in development, then host-based URL
-    this.urls = [localhostUrl, hostUrl]
-    
-    console.log('WebSocket URLs to try:', this.urls)
+    this.urls = []
   }
 
   /* ------------------------------------------------------------------ */
@@ -38,6 +23,9 @@ export class WebSocketClient {
   /* ------------------------------------------------------------------ */
 
   async connect(): Promise<void> {
+    // Build URLs when connecting (not in constructor) to get current window.location
+    this.buildWebSocketUrls()
+    
     if (this.isConnecting) {
       console.warn("WebSocket already connecting, skipping...")
       return
@@ -86,19 +74,22 @@ export class WebSocketClient {
   /* Internal helpers                                                   */
   /* ------------------------------------------------------------------ */
 
-  private getWebSocketUrls(): string[] {
+  private buildWebSocketUrls(): void {
     if (typeof window === 'undefined') return []
     
-    // Get the current host from window.location
-    const currentHost = window.location.host
+    // Get current port from window.location
+    const currentPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
+    const currentHost = window.location.hostname
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     
-    // For WebContainer environment, use the same host but port 8080
-    return [
-      `${protocol}//${currentHost.replace(':3000', ':8080')}`,
+    // Build WebSocket URLs - try current host with port 8080, then localhost fallbacks
+    this.urls = [
+      `${protocol}//${currentHost}:8080`,
       `ws://localhost:8080`,
       `ws://127.0.0.1:8080`
     ]
+    
+    console.log('WebSocket URLs to try:', this.urls)
   }
 
   private async tryConnectSequentially(): Promise<void> {
